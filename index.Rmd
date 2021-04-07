@@ -1,0 +1,170 @@
+---
+title: "Ice Cream Analysis"
+author: "Harris Temuri"
+date: "4/7/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Time Series Analysis of Ice Cream Search Popularity on Google.com
+
+What is a time series? A time series is a series of data points taken with respect to time. The time series data that I chose to analyze is a series of Ice Cream search popularity on the Google search engine.
+
+What is search popularity? According to Google, "Numbers represent search interest relative to the highest point on the chart for the given region and time. A value of 100 is the peak popularity for the term. A value of 50 means that the term is half as popular. A score of 0 means there was not enough data for this term."
+
+### Goal of the Project
+
+Using the dataset provided by Google, I will create a model to predict the search popularity of Ice Cream. I will use data beginning from January 1, 2004 to December 1, 2020 to generate the model. Afterwards, I will compare the predicted values for the months of January, 2021 - April 1, 2021 to the actual values from Google.
+
+### Initializing the project
+
+Install and Load the following libraries:
+
+```{r}
+library(readr)
+library(MASS)
+library(ggplot2)
+library(dplyr)
+library(TSstudio)
+library(forecast)
+library(tseries)
+```
+
+Next, I will create a time series of the "training" data and another for the entire data set
+
+```{r}
+fullData <- read_csv("iceCreamData.csv",col_types = cols(Month = col_date(format = "%Y-%m")))
+
+iceCream <- ts(fullData[1:204, 2], freq=12, start=c(2004, 1))
+iceCream.full <- ts(fullData[, 2], freq=12, start=c(2004, 1))
+```
+
+### Ice Cream Search Popularity Time Series Plot
+
+```{r}
+# Plot Time Series
+ts_plot(iceCream,
+        title = "Ice Cream Search Popularity",
+        Xtitle = "Time",
+        Ytitle = "Interest Over Time"
+)
+```
+
+We can also take a look at the acf and pacf graphs of the raw data:
+
+```{r}
+# Plotting acf and pacf before data manipulation
+par(mfrow=c(2,1))
+acf(iceCream, lag.max = length(iceCream))
+pacf(iceCream, lag.max = length(iceCream))
+```
+### Decomposing Series
+
+Looking at these plots, we can clearly tell that there is a strong seasonality. In order to fit an ARIMA model to the time series, we need to remove the seasonality. To remove the seasonality and decompose the series, I will use the stl function which comes with the built in the stats package in R. I will then create a series of just the trend and residuals.
+
+```{r}
+# Decomposing series
+iceCream.stl <- stl(iceCream[, 1], "periodic")
+iceCream.full.stl <- stl(iceCream.full[, 1], "periodic")
+plot(iceCream.stl)
+```
+
+The data is now decomposed into a trend, seasonality, and residuals. I will create a new series with just the trend and random error components of the series and show the new plot.
+
+```{r}
+# Removing Seasonality
+iceCream.series <- iceCream.stl$time.series[,2] + iceCream.stl$time.series[, 3]
+
+# Plot Time Series
+ts_plot(iceCream.series,
+        title = "Ice Cream Search Popularity Deseasonalized",
+        Xtitle = "Time",
+        Ytitle = "Interest Over Time"
+)
+
+# Plotting acf and pacf after removing seasonality
+par(mfrow=c(2,1))
+acf(iceCream.series, lag.max = length(iceCream.series))
+pacf(iceCream.series, lag.max = length(iceCream.series))
+```
+
+Now that the series is deseasonalized, we need to decide what orders to use for the ARIMA model. There are a few different ways of determining this, but I will choose my model based on the AIC value. Since the data was not differenced, my "d" value is going to remain 0.
+
+### AIC to determine best ARIMA order
+
+```{r}
+# Determining best ARIMA Model for the Time Series by comparing AIC values
+aicMatrix <- matrix(nrow = 4, ncol = 4)
+for (r in 1:4) {
+  for (l in 1:4) {
+    #print(paste("(",r,",",l,")"))
+    aicMatrix[r,l] <- AIC(arima(iceCream.series, order=c(r,0,l)))
+    #print(aicMatrix[r,l]) 
+  }
+}
+
+aicTable <- as.table(aicMatrix)
+colnames(aicTable) <- c(1,2,3,4)
+rownames(aicTable) <- c(1,2,3,4)
+aicTable
+
+```
+
+Looking at the table of AIC values at different orders, we get the lowest AIC from ARIMA(2,0,4)
+
+```{r}
+# We will use ARIMA(2,0,4) because that gave us the lowest AIC
+iceCream.series.arma1 <- arima(iceCream.series, order=c(2,0,4))
+iceCream.series.arma1
+
+# Plotting acf and pacf of residuals
+par(mfrow=c(2,1))
+acf(iceCream.series.arma1$residuals, lag.max = length(iceCream.series.arma1$residuals))
+pacf(iceCream.series.arma1$residuals, lag.max = length(iceCream.series.arma1$residuals))
+
+# Testing with first 10 lags
+checkresiduals(iceCream.series.arma1, lag = 12)
+```
+
+### Try Again with different decomposition
+
+The residuals show up as dependent, so we cannot trust the resulting model predictions. I will use the mstl function instead to decompose and deseasonalize the data.
+
+```{r}
+# Decomposing series
+iceCream.new.stl <- iceCream %>% mstl()
+
+# Removing Seasonality
+iceCream.new.series <- iceCream.new.stl[,2] + iceCream.new.stl[, 4]
+
+# We will use ARIMA(4,0,4) because that gave us the lowest AIC
+iceCream.new.series.arma1 <- arima(iceCream.new.series, order=c(4,0,4))
+
+# Analyzing Residuals
+checkresiduals(iceCream.new.series.arma1)
+```
+
+Our residuals are now normal, so we can believe in the data. Finally, we have make a prediction data series and compare it to our sample data.
+
+### Prediction data and Final Results
+
+```{r}
+# Prediction of the series
+iceCream.new.pred <- predict(iceCream.new.series.arma1, n.ahead = 4)
+# Actual Data
+iceCream.future <- ts(fullData[205:208,2], frequency = 12, start = c(2021,1))
+# Seasonality of actual data
+iceCream.future.seasonality <- iceCream.full.stl$time.series[205:208,1]
+# Final prediction data
+newFinalPred <- iceCream.new.pred$pred + iceCream.new.pred$se
+# Deseasonalized actual data
+ActualDeseasonalized <- iceCream.future - iceCream.future.seasonality
+
+newFinalPred
+ActualDeseasonalized
+
+```
+All of our predicted values of Ice Cream search popularity were within error of the actual values.
